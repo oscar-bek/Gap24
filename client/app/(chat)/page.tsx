@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
+import { Loader2, ArrowLeft } from "lucide-react";
 import ContactList from "./_components/contact-list";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import AddContact from "./_components/add-contact";
@@ -17,14 +17,18 @@ import { useSession } from "next-auth/react";
 import { generateToken } from "@/lib/generate-token";
 import { IError, IMessage, IUser } from "@/types";
 import { toast } from "@/hooks/use-toast";
-import { io } from "socket.io-client";
+import { io, Socket } from "socket.io-client";
 import { useAuth } from "@/hooks/use-auth";
 import useAudio from "@/hooks/use-audio";
 import { CONST } from "@/lib/constants";
+import { Button } from "@/components/ui/button";
+import Settings from "./_components/settings";
+import CallManager from "@/components/AudioVideoCall";
 
 const HomePage = () => {
   const [contacts, setContacts] = useState<IUser[]>([]);
   const [messages, setMessages] = useState<IMessage[]>([]);
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   // Helper function to get display name
   const getDisplayName = (user: IUser) => {
@@ -41,7 +45,7 @@ const HomePage = () => {
 
   const { setCreating, setLoading, isLoading, setLoadMessages, setTyping } =
     useLoading();
-  const { currentContact, editedMessage, setEditedMessage } =
+  const { currentContact, editedMessage, setEditedMessage, setCurrentContact } =
     useCurrentContact();
   const { data: session } = useSession();
   const { setOnlineUsers } = useAuth();
@@ -107,29 +111,60 @@ const HomePage = () => {
     }
   };
 
- useEffect(() => {
-		socket.current = io('ws://localhost:5000')
-	}, [])
+  useEffect(() => {
+    console.log("🔌 Initializing socket connection...");
 
-	useEffect(() => {
-		if (session?.currentUser?._id) {
-			socket.current?.emit('addOnlineUser', session.currentUser)
-			socket.current?.on('getOnlineUsers', (data: { socketId: string; user: IUser }[]) => {
-				setOnlineUsers(data.map(item => item.user))
-			})
-			getContacts()
-		}
-	}, [session?.currentUser])
+    socket.current = io("http://localhost:5000", {
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 5,
+    });
+
+    socket.current.on("connect", () => {
+      console.log("✅ Socket connected:", socket.current?.id);
+    });
+
+    socket.current.on("disconnect", () => {
+      console.log("❌ Socket disconnected");
+    });
+
+    socket.current.on("connect_error", (error) => {
+      console.error("❌ Socket connection error:", error);
+    });
+
+    return () => {
+      console.log("🔌 Disconnecting socket...");
+      socket.current?.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
-    if (session?.currentUser) {
-      socket.current?.on("getCreatedUser", (user) => {
+    if (session?.currentUser?._id && socket.current) {
+      console.log("👤 Adding user as online:", session.currentUser._id);
+
+      socket.current.emit("addOnlineUser", session.currentUser);
+
+      socket.current.on(
+        "getOnlineUsers",
+        (data: { socketId: string; user: IUser }[]) => {
+          console.log("👥 Online users updated:", data.length);
+          setOnlineUsers(data.map((item) => item.user));
+        }
+      );
+
+      getContacts();
+    }
+  }, [session?.currentUser, socket.current]);
+
+  useEffect(() => {
+    if (session?.currentUser && socket.current) {
+      socket.current.on("getCreatedUser", (user) => {
         setContacts((prev) => {
           const isExist = prev.some((item) => item._id === user._id);
           return isExist ? prev : [...prev, user];
         });
 
-        // Show notification when someone adds you as a contact
         const userName = getDisplayName(user);
         toast({
           title: "New Contact",
@@ -138,7 +173,7 @@ const HomePage = () => {
         });
       });
 
-      socket.current?.on(
+      socket.current.on(
         "getNewMessage",
         ({ newMessage, sender, receiver }: GetSocketType) => {
           setTyping({ message: "", sender: null });
@@ -166,9 +201,7 @@ const HomePage = () => {
             playSound(receiver.notificationSound);
           }
 
-          // Show notification popup when message is received
           if (!currentContact?._id) {
-            // User is not currently chatting with anyone
             const senderName = getDisplayName(sender);
             toast({
               title: "New Message",
@@ -176,7 +209,6 @@ const HomePage = () => {
               duration: 5000,
             });
           } else if (currentContact?._id !== newMessage.sender._id) {
-            // User is chatting with someone else
             const senderName = getDisplayName(sender);
             toast({
               title: "New Message",
@@ -184,7 +216,6 @@ const HomePage = () => {
               duration: 5000,
             });
           } else if (currentContact?._id === newMessage.sender._id) {
-            // If user is currently chatting with sender, show a subtle notification
             const senderName = getDisplayName(sender);
             toast({
               title: "Message Received",
@@ -195,7 +226,7 @@ const HomePage = () => {
         }
       );
 
-      socket.current?.on("getReadMessages", (messages: IMessage[]) => {
+      socket.current.on("getReadMessages", (messages: IMessage[]) => {
         setMessages((prev) => {
           return prev.map((item) => {
             const message = messages.find((msg) => msg._id === item._id);
@@ -203,8 +234,10 @@ const HomePage = () => {
           });
         });
 
-        // Show notification when messages are read
-        if (messages.length > 0 && currentContact?._id === messages[0]?.sender._id) {
+        if (
+          messages.length > 0 &&
+          currentContact?._id === messages[0]?.sender._id
+        ) {
           const contactName = getDisplayName(currentContact);
           toast({
             title: "Message Read",
@@ -214,7 +247,7 @@ const HomePage = () => {
         }
       });
 
-      socket.current?.on(
+      socket.current.on(
         "getUpdatedMessage",
         ({ updatedMessage, sender }: GetSocketType) => {
           setTyping({ message: "", sender: null });
@@ -245,7 +278,7 @@ const HomePage = () => {
         }
       );
 
-      socket.current?.on(
+      socket.current.on(
         "getDeletedMessage",
         ({ deletedMessage, sender, filteredMessages }: GetSocketType) => {
           setMessages((prev) =>
@@ -268,7 +301,6 @@ const HomePage = () => {
             )
           );
 
-          // Show notification when message is deleted
           if (currentContact?._id !== sender._id) {
             const senderName = getDisplayName(sender);
             toast({
@@ -280,17 +312,18 @@ const HomePage = () => {
         }
       );
 
-      socket.current?.on("getTyping", ({ message, sender }: GetSocketType) => {
+      socket.current.on("getTyping", ({ message, sender }: GetSocketType) => {
         if (currentContact?._id === sender._id) {
           setTyping({ message, sender });
         }
       });
     }
-  }, [session?.currentUser, currentContact?._id]);
+  }, [session?.currentUser, currentContact?._id, socket.current]);
 
   useEffect(() => {
     if (currentContact?._id) {
       getMessages();
+      setIsChatOpen(true);
     }
   }, [currentContact]);
 
@@ -514,39 +547,90 @@ const HomePage = () => {
     });
   };
 
+  const handleContactClick = (contact: IUser) => {
+    setCurrentContact(contact);
+  };
+
+  const handleBackToContacts = () => {
+    setIsChatOpen(false);
+    setCurrentContact(null);
+  };
+
   return (
     <>
-      <div className="w-80 max-md:w-16 h-screen border-r fixed inset-0 z-50">
-        {isLoading && (
-          <div className="w-full h-[95vh] flex justify-center items-center">
-            <Loader2 size={50} className="animate-spin" />
-          </div>
-        )}
+      {/* Call Manager with socket reference */}
+      <CallManager socketRef={socket} />
 
-        {!isLoading && <ContactList contacts={contacts} />}
-      </div>
-      <div className="max-md:pl-16 pl-80 w-full">
-        {!currentContact?._id && (
-          <AddContact
-            contactForm={contactForm}
-            onCreateContact={onCreateContact}
-          />
-        )}
+      <div className="flex h-screen overflow-hidden">
+        {/* Contact List Sidebar */}
+        <div
+          className={`w-full md:w-80 h-screen border-r bg-background transition-transform duration-300 ${
+            isChatOpen ? "hidden md:block" : "block"
+          }`}
+        >
+          {isLoading && (
+            <div className="w-full h-[95vh] flex justify-center items-center">
+              <Loader2 size={50} className="animate-spin" />
+            </div>
+          )}
 
-        {currentContact?._id && (
-          <div className="w-full relative">
-            <TopChat messages={messages} />
-            <Chat
-              messageForm={messageForm}
-              onSubmitMessage={onSubmitMessage}
-              messages={messages}
-              onReadMessages={onReadMessages}
-              onReaction={onReaction}
-              onDeleteMessage={onDeleteMessage}
-              onTyping={onTyping}
+          {!isLoading && (
+            <ContactList
+              contacts={contacts}
+              onContactClick={handleContactClick}
             />
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* Chat Area */}
+        <div className={`flex-1 ${isChatOpen ? "block" : "hidden md:block"}`}>
+          {!currentContact?._id && (
+            <div className="absolute top-4 right-4 z-50">
+              <Settings />
+            </div>
+          )}
+
+          {!currentContact?._id && (
+            <AddContact
+              contactForm={contactForm}
+              onCreateContact={onCreateContact}
+            />
+          )}
+
+          {currentContact?._id && (
+            <div className="w-full h-screen flex flex-col relative">
+              <div className="md:hidden absolute top-2 left-2 z-50">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={handleBackToContacts}
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+              </div>
+
+              <div className="absolute top-2 right-2 z-50">
+                <Settings />
+              </div>
+
+              <TopChat
+                messages={messages}
+                onBack={handleBackToContacts}
+                socketRef={socket.current}
+              />
+
+              <Chat
+                messageForm={messageForm}
+                onSubmitMessage={onSubmitMessage}
+                messages={messages}
+                onReadMessages={onReadMessages}
+                onReaction={onReaction}
+                onDeleteMessage={onDeleteMessage}
+                onTyping={onTyping}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </>
   );

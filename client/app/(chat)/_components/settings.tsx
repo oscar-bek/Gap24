@@ -66,7 +66,7 @@ const Settings = () => {
     <>
       <Popover>
         <PopoverTrigger asChild>
-          <Button size={"icon"} variant={"secondary"} className="max-md:w-full">
+          <Button size={"icon"} variant={"secondary"} className="flex-shrink-0">
             <Menu />
           </Button>
         </PopoverTrigger>

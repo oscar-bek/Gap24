@@ -1,19 +1,22 @@
 {
-	"name": "socket",
-	"version": "1.0.0",
-	"main": "socket.js",
-	"scripts": {
-		"socket": "nodemon socket.js"
-	},
-	"keywords": [],
-	"author": "",
-	"license": "ISC",
-	"description": "",
-	"devDependencies": {
-		"nodemon": "^3.1.7"
-	},
-	"dependencies": {
-		"socket.io": "^4.8.1"
-	},
-	"type": "commonjs"
+  "name": "socket",
+  "version": "1.0.0",
+  "main": "socket.js",
+  "scripts": {
+    "socket": "nodemon socket.js",
+    "dev": "nodemon socket.js",
+    "start": "node socket.js"
+  },
+  "keywords": ["socket.io", "webrtc", "messaging"],
+  "author": "",
+  "license": "ISC",
+  "description": "Socket.io server for messenger app",
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1",
+    "uuid": "^9.0.1"
+  },
+  "type": "commonjs"
 }

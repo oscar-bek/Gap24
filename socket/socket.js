@@ -2,335 +2,247 @@ const io = require("socket.io")(5000, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-
-
-let users = []; // {user, socketId}
-let activeCalls = new Map(); // {callId: {caller, receiver, type, status}}
+let users = [];
+let activeCalls = new Map();
 
 const addOnlineUser = (user, socketId) => {
-  const checkUser = users.find((u) => u.user._id === user._id);
-  if (!checkUser) {
-    users.push({ user, socketId });
-    // Qo'shilganidan keyin tekshirish
-    const justAdded = users.find((u) => u.user._id === user._id);
+  const existingUserIndex = users.findIndex((u) => u.user._id === user._id);
+  
+  if (existingUserIndex !== -1) {
+    // ✅ Eski socketId ni disconnect qilish
+    const oldSocketId = users[existingUserIndex].socketId;
+    if (oldSocketId !== socketId) {
+      console.log(`🔄 Updating user ${user._id} socket: ${oldSocketId} → ${socketId}`);
+    }
+    users[existingUserIndex].socketId = socketId;
   } else {
-    // Socket ID ni yangilash (agar user reconnect qilsa)
-    checkUser.socketId = socketId;
+    console.log(`➕ Adding new user: ${user._id} with socket: ${socketId}`);
+    users.push({ user, socketId });
   }
-
-  users.forEach((u, index) => {
-    console.log(`${index + 1}.`, {
-      id: u.user._id,
-      email: u.user.email || "email yo'q",
-      socketId: u.socketId.substring(0, 8) + "...",
-    });
-  });
 };
 
 const getSocketId = (userId) => {
-  const user1 = users.find((u) => u.user._id === userId);
-  const user2 = users.find((u) => String(u.user._id) === String(userId));
-  const user3 = users.find((u) => u.user._id.toString() === userId.toString());
-
-  const foundUser = user1 || user2 || user3;
-  return foundUser ? foundUser.socketId : null;
+  const user = users.find(
+    (u) =>
+      u.user._id === userId ||
+      String(u.user._id) === String(userId) ||
+      u.user._id.toString() === userId.toString()
+  );
+  
+  if (user) {
+    console.log(`🔍 Found socket for user ${userId}: ${user.socketId}`);
+  } else {
+    console.log(`❌ Socket NOT found for user ${userId}`);
+    console.log(`📋 Online users:`, users.map(u => ({ id: u.user._id, socket: u.socketId })));
+  }
+  
+  return user ? user.socketId : null;
 };
 
 const generateCallId = () => {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  return (
+    Math.random().toString(36).substring(2, 15) +
+    Math.random().toString(36).substring(2, 15)
+  );
 };
 
 io.on("connection", (socket) => {
   console.log("✅ User connected:", socket.id);
-  
-  // Add user to online users list
-  socket.on("addOnlineUser", (user) => {
-    console.log("👤 Adding online user:", { userId: user._id, socketId: socket.id });
-    addOnlineUser(user, socket.id);
-    io.emit("getOnlineUsers", users);
-    console.log("📊 Total online users:", users.length);
-  });
 
+  // Add online user
   socket.on("addOnlineUser", (user) => {
+    console.log("👤 Adding online user:", user._id, "Socket:", socket.id);
     addOnlineUser(user, socket.id);
     io.emit("getOnlineUsers", users);
   });
 
-  // Call functionality with WebRTC
+  // Call Request
   socket.on("callRequest", ({ caller, receiver, callType }) => {
-    console.log("📞 Call request received:", { 
-      callerId: caller._id, 
-      receiverId: receiver._id, 
-      callType,
-      timestamp: new Date().toISOString()
-    });
-    
+    console.log(`📞 Call request: ${caller._id} → ${receiver._id} (${callType})`);
+
     const receiverSocketId = getSocketId(receiver._id);
     const callId = generateCallId();
-    
-    console.log("🔍 Receiver lookup:", { 
-      receiverId: receiver._id, 
-      receiverSocketId, 
-      onlineUsers: users.map(u => ({ id: u.user._id, socketId: u.socketId }))
-    });
-    
+
     if (receiverSocketId) {
-      // Store call information
       activeCalls.set(callId, {
         caller,
         receiver,
-        type: callType, // 'audio' or 'video'
-        status: 'ringing',
-        startTime: new Date()
+        type: callType,
+        status: "ringing",
+        startTime: new Date(),
+        callerSocketId: socket.id,
+        receiverSocketId: receiverSocketId,
       });
-      
-      console.log("✅ Call stored:", { callId, callType, status: 'ringing' });
-      
-      // Send call request to receiver
-      socket.to(receiverSocketId).emit("incomingCall", {
+
+      console.log(`✅ Call ${callId} created. Caller socket: ${socket.id}, Receiver socket: ${receiverSocketId}`);
+
+      // Send callId to caller
+      socket.emit("callRequestSent", { callId });
+
+      // Send incoming call to receiver
+      io.to(receiverSocketId).emit("incomingCall", {
         callId,
         caller,
         callType,
-        timestamp: new Date()
       });
-      
-      console.log("📤 Call request sent to receiver:", receiverSocketId);
-      
-      // Confirm call request sent to caller
-      socket.emit("callRequestSent", { callId, receiver });
-      
+
+      console.log(`📤 Incoming call sent to receiver ${receiver._id}`);
     } else {
-      console.log("❌ Receiver offline:", receiver._id);
-      // User is offline
-      socket.emit("callFailed", { 
-        message: "User is offline",
-        receiver,
-        callType
-      });
+      console.error(`❌ Receiver ${receiver._id} not found online`);
+      socket.emit("callFailed", { reason: "User is offline" });
     }
   });
 
+  // Call Accepted
   socket.on("callAccepted", ({ callId, receiver }) => {
-    console.log("📞 Call accepted event received:", { callId, receiverId: receiver._id });
-    
+    console.log(`✅ Call accepted: ${callId}`);
+
     const call = activeCalls.get(callId);
-    if (call && call.receiver._id === receiver._id) {
-      console.log("✅ Found call:", { 
-        callId, 
-        type: call.type, 
-        status: call.status,
-        callerId: call.caller._id,
-        receiverId: call.receiver._id
-      });
-      
-      const callerSocketId = getSocketId(call.caller._id);
-      const receiverSocketId = getSocketId(call.receiver._id);
-      
-      console.log("🔌 Socket IDs:", { 
-        callerSocketId: callerSocketId?.substring(0, 8) + "...", 
-        receiverSocketId: receiverSocketId?.substring(0, 8) + "...", 
-        currentSocket: socket.id.substring(0, 8) + "..."
-      });
-      
-      if (callerSocketId && receiverSocketId) {
-              // Update call status
-      call.status = 'connected';
+    if (call) {
+      call.status = "connected";
       call.acceptedAt = new Date();
-        
-        console.log("✅ Call status updated to connected");
-        
-        // Notify caller that call was accepted
-        socket.to(callerSocketId).emit("callAccepted", { 
-          callId, 
-          receiver
-        });
-        console.log("📤 callAccepted sent to caller");
-        
-        // Send call started event to both parties
-        socket.to(callerSocketId).emit("callStarted", { 
-          callId, 
-          call
-        });
-        socket.emit("callStarted", { 
-          callId, 
-          call
-        });
-        console.log("🚀 callStarted sent to both parties");
-        
-        // Now the caller should send their offer to the receiver (for WebRTC)
-        // The receiver will create an answer and send it back
-      } else {
-        console.log("❌ Socket IDs not found:", { 
-          callerSocketId: !!callerSocketId, 
-          receiverSocketId: !!receiverSocketId 
-        });
-      }
-    } else {
-      console.log("❌ Call not found or receiver mismatch:", { 
-        callId, 
-        receiverId: receiver._id, 
-        activeCalls: Array.from(activeCalls.keys()) 
+
+      console.log(`📤 Notifying caller (${call.callerSocketId}) and receiver (${call.receiverSocketId})`);
+
+      // Notify caller
+      io.to(call.callerSocketId).emit("callAccepted", {
+        callId,
+        receiver: call.receiver,
       });
+
+      // Notify receiver
+      io.to(call.receiverSocketId).emit("callAccepted", {
+        callId,
+        receiver: call.caller,
+      });
+
+      console.log(`✅ Both parties notified about call acceptance`);
+    } else {
+      console.error(`❌ Call ${callId} not found in activeCalls`);
     }
   });
 
-  socket.on("callRejected", ({ callId, receiver, reason }) => {
-    console.log("Call rejected:", { callId, receiverId: receiver._id, reason });
+  // WebRTC Signaling - IMPROVED
+  socket.on("offer", ({ callId, offer, targetUserId }) => {
+    console.log(`📤 Forwarding offer for call ${callId} to user ${targetUserId}`);
     
     const call = activeCalls.get(callId);
-    if (call && call.receiver._id === receiver._id) {
-      const callerSocketId = getSocketId(call.caller._id);
-      
-      if (callerSocketId) {
-        // Remove call from active calls
-        activeCalls.delete(callId);
-        
-        // Notify caller that call was rejected
-        socket.to(callerSocketId).emit("callRejected", { callId, receiver, reason });
-        console.log("Call rejected notification sent to caller");
-      }
-    } else {
-      console.log("Call not found for rejection:", { callId, receiverId: receiver._id });
-    }
-  });
-
-  socket.on("callEnded", () => {
-    console.log("📞 Call ended by user:", socket.id);
-    
-    // Find all calls involving this user
-    for (const [callId, call] of activeCalls.entries()) {
-      if (call.caller._id === socket.id || call.receiver._id === socket.id) {
-        const otherUserId = call.caller._id === socket.id ? call.receiver._id : call.caller._id;
-        const otherUserSocketId = getSocketId(otherUserId);
-        
-        if (otherUserSocketId) {
-          socket.to(otherUserSocketId).emit("callEnded", { 
-            callId, 
-            reason: "Call ended by other user"
-          });
-        }
-        
-        activeCalls.delete(callId);
-        break;
-      }
-    }
-  });
-
-  // WebRTC signaling
-  socket.on("offer", ({ callId, offer, targetUserId }) => {
-    console.log("📤 Offer received:", { callId, targetUserId, offerType: offer?.type });
-    
     const targetSocketId = getSocketId(targetUserId);
+
     if (targetSocketId) {
-      socket.to(targetSocketId).emit("offer", { callId, offer, fromUserId: socket.id });
-      console.log("✅ Offer forwarded to target user");
+      io.to(targetSocketId).emit("offer", {
+        callId,
+        offer,
+        fromUserId: socket.id,
+      });
+      console.log(`✅ Offer forwarded to socket ${targetSocketId}`);
     } else {
-      console.log("❌ Target user not found for offer");
+      console.error(`❌ Target user ${targetUserId} socket not found`);
+      
+      if (call) {
+        console.log(`📋 Call info - Caller: ${call.callerSocketId}, Receiver: ${call.receiverSocketId}`);
+      }
     }
   });
 
   socket.on("answer", ({ callId, answer, targetUserId }) => {
-    console.log("📤 Answer received:", { callId, targetUserId, answerType: answer?.type });
+    console.log(`📤 Forwarding answer for call ${callId} to user ${targetUserId}`);
     
     const targetSocketId = getSocketId(targetUserId);
+
     if (targetSocketId) {
-      socket.to(targetSocketId).emit("answer", { callId, answer, fromUserId: socket.id });
-      console.log("✅ Answer forwarded to target user");
+      io.to(targetSocketId).emit("answer", {
+        callId,
+        answer,
+        fromUserId: socket.id,
+      });
+      console.log(`✅ Answer forwarded to socket ${targetSocketId}`);
     } else {
-      console.log("❌ Target user not found for answer");
+      console.error(`❌ Target user ${targetUserId} socket not found`);
     }
   });
 
   socket.on("iceCandidate", ({ callId, candidate, targetUserId }) => {
-    console.log("🧊 ICE candidate received:", { callId, targetUserId, candidateType: candidate?.type });
-    
     const targetSocketId = getSocketId(targetUserId);
+
     if (targetSocketId) {
-      socket.to(targetSocketId).emit("iceCandidate", { callId, candidate, fromUserId: socket.id });
-      console.log("✅ ICE candidate forwarded to target user");
+      io.to(targetSocketId).emit("iceCandidate", {
+        callId,
+        candidate,
+        fromUserId: socket.id,
+      });
+      console.log(`🧊 ICE candidate forwarded to ${targetUserId} (${targetSocketId})`);
     } else {
-      console.log("❌ Target user not found for ICE candidate");
+      console.error(`❌ Cannot forward ICE - Target user ${targetUserId} not found`);
     }
   });
 
-  // Send offer when call is accepted
-  socket.on("sendOffer", ({ callId, offer, targetUserId }) => {
-    console.log("📤 SendOffer event received:", { 
-      callId, 
-      targetUserId, 
-      offerType: offer?.type,
-      timestamp: new Date().toISOString()
-    });
-    
-    const targetSocketId = getSocketId(targetUserId);
-    console.log("🎯 Target socket ID:", targetSocketId?.substring(0, 8) + "...");
-    
-    if (targetSocketId) {
-      socket.to(targetSocketId).emit("offer", { callId, offer, fromUserId: socket.id });
-      console.log("✅ Offer sent to target user");
-    } else {
-      console.log("❌ Target user not found or offline:", targetUserId);
-    }
-  });
-
-
-
-  // Call mute/unmute and video on/off
-  socket.on("callStateChanged", ({ callId, userId, audioEnabled, videoEnabled }) => {
+  // Call Rejected
+  socket.on("callRejected", ({ callId, receiver, reason }) => {
+    console.log(`❌ Call rejected: ${callId}, Reason: ${reason}`);
     const call = activeCalls.get(callId);
+
     if (call) {
-      const otherUserId = call.caller._id === userId ? call.caller._id : call.receiver._id;
-      const otherUserSocketId = getSocketId(otherUserId);
-      
-      if (otherUserSocketId) {
-        socket.to(otherUserSocketId).emit("callStateChanged", {
+      const callerSocketId = call.callerSocketId;
+      if (callerSocketId) {
+        io.to(callerSocketId).emit("callRejected", {
           callId,
-          userId,
-          audioEnabled,
-          videoEnabled
+          receiver,
+          reason,
         });
+        console.log(`📤 Call rejection sent to caller (${callerSocketId})`);
       }
+      activeCalls.delete(callId);
     }
   });
 
-  // Existing message functionality
- socket.on('createContact', ({ currentUser, receiver }) => {
-		const receiverSocketId = getSocketId(receiver._id)
-		if (receiverSocketId) {
-			socket.to(receiverSocketId).emit('getCreatedUser', currentUser)
-		}
-	})
+  // Call Ended
+  socket.on("callEnded", ({ callId, targetUserId, reason }) => {
+    console.log(`🔴 Call ended: ${callId}, Reason: ${reason}`);
+    const targetSocketId = getSocketId(targetUserId);
 
-	socket.on('sendMessage', ({ newMessage, receiver, sender }) => {
-		const receiverSocketId = getSocketId(receiver._id)
-		if (receiverSocketId) {
-			socket.to(receiverSocketId).emit('getNewMessage', { newMessage, sender, receiver })
-		}
-	})
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("callEnded", { callId, reason });
+      console.log(`📤 Call end notification sent to ${targetUserId} (${targetSocketId})`);
+    }
+    
+    activeCalls.delete(callId);
+  });
+
+  // Message handlers
+  socket.on("createContact", ({ currentUser, receiver }) => {
+    const receiverSocketId = getSocketId(receiver._id);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("getCreatedUser", currentUser);
+    }
+  });
+
+  socket.on("sendMessage", ({ newMessage, receiver, sender }) => {
+    const receiverSocketId = getSocketId(receiver._id);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("getNewMessage", {
+        newMessage,
+        sender,
+        receiver,
+      });
+    }
+  });
 
   socket.on("readMessages", ({ receiver, messages }) => {
-    console.log("=== readMessages socket keldi ===");
-    console.log("Receiver (aslida sender):", receiver._id);
-    console.log("Messages soni:", messages.length);
-
     const receiverSocketId = getSocketId(receiver._id);
-    console.log("Receiver socket ID:", receiverSocketId);
-
     if (receiverSocketId) {
-      console.log("Socket orqali getReadMessages yuborish...");
-      socket.to(receiverSocketId).emit("getReadMessages", messages);
-      console.log("getReadMessages yuborildi!");
-    } else {
-      console.log("Receiver offline");
+      io.to(receiverSocketId).emit("getReadMessages", messages);
     }
   });
 
   socket.on("updateMessage", ({ updatedMessage, receiver, sender }) => {
     const receiverSocketId = getSocketId(receiver._id);
     if (receiverSocketId) {
-      socket
-        .to(receiverSocketId)
-        .emit("getUpdatedMessage", { updatedMessage, sender, receiver });
+      io.to(receiverSocketId).emit("getUpdatedMessage", {
+        updatedMessage,
+        sender,
+        receiver,
+      });
     }
   });
 
@@ -339,57 +251,58 @@ io.on("connection", (socket) => {
     ({ deletedMessage, filteredMessages, sender, receiver }) => {
       const receiverSocketId = getSocketId(receiver._id);
       if (receiverSocketId) {
-        socket
-          .to(receiverSocketId)
-          .emit("getDeletedMessage", {
-            deletedMessage,
-            sender,
-            filteredMessages,
-          });
+        io.to(receiverSocketId).emit("getDeletedMessage", {
+          deletedMessage,
+          sender,
+          filteredMessages,
+        });
       }
     }
   );
 
-  socket.on('typing', ({ receiver, sender, message }) => {
-		const receiverSocketId = getSocketId(receiver._id)
-		if (receiverSocketId) {
-			socket.to(receiverSocketId).emit('getTyping', { sender, message })
-		}
-	})
+  socket.on("typing", ({ receiver, sender, message }) => {
+    const receiverSocketId = getSocketId(receiver._id);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("getTyping", { sender, message });
+    }
+  });
 
+  // Disconnect
   socket.on("disconnect", () => {
-    console.log("User disconnected", socket.id);
-    
-    // Find the user who disconnected
-    const disconnectedUser = users.find(u => u.socketId === socket.id);
-    
-    if (disconnectedUser) {
-      console.log("Disconnected user:", disconnectedUser.user._id);
-      
-      // End any active calls for this user
-      for (const [callId, call] of activeCalls.entries()) {
-        if (call.caller._id === disconnectedUser.user._id || call.receiver._id === disconnectedUser.user._id) {
-          console.log("Ending call due to user disconnect:", callId);
-          
+    console.log(`❌ User disconnected: ${socket.id}`);
 
-          
-          const otherUserId = call.caller._id === disconnectedUser.user._id ? call.receiver._id : call.caller._id;
-          const otherUserSocketId = getSocketId(otherUserId);
-          
-          if (otherUserSocketId) {
-            socket.to(otherUserSocketId).emit("callEnded", { 
-              callId, 
-              userId: disconnectedUser.user._id,
-              reason: "User disconnected"
+    const disconnectedUser = users.find((u) => u.socketId === socket.id);
+
+    if (disconnectedUser) {
+      console.log(`👤 User ${disconnectedUser.user._id} disconnected`);
+      
+      // End all active calls for this user
+      for (const [callId, call] of activeCalls.entries()) {
+        if (
+          call.callerSocketId === socket.id ||
+          call.receiverSocketId === socket.id
+        ) {
+          const otherSocketId = 
+            call.callerSocketId === socket.id 
+              ? call.receiverSocketId 
+              : call.callerSocketId;
+
+          if (otherSocketId) {
+            io.to(otherSocketId).emit("callEnded", {
+              callId,
+              reason: "User disconnected",
             });
+            console.log(`📤 Call ${callId} ended due to disconnect`);
           }
-          
+
           activeCalls.delete(callId);
         }
       }
     }
-    
+
     users = users.filter((u) => u.socketId !== socket.id);
     io.emit("getOnlineUsers", users);
   });
 });
+
+console.log("🚀 Socket.IO server running on port 5000");

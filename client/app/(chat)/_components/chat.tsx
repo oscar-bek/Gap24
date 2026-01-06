@@ -149,7 +149,7 @@ const Chat: FC<Props> = ({
       <Form {...messageForm}>
         <form
           onSubmit={messageForm.handleSubmit(onSubmitMessage)}
-          className="w-full flex relative"
+          className="w-full flex relative pl-2 pr-2"
           ref={scrollRef}
         >
           <Dialog open={open} onOpenChange={setOpen}>
@@ -180,7 +180,7 @@ const Chat: FC<Props> = ({
               <FormItem className="w-full">
                 <FormControl>
                   <Input
-                    className="bg-secondary border-l border-l-muted-foreground border-r border-r-muted-foreground h-9"
+                    className="bg-secondary h-9"
                     placeholder="Type a message"
                     value={field.value}
                     onBlur={() => field.onBlur()}
